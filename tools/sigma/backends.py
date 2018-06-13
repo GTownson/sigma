@@ -857,6 +857,9 @@ class WindowsDefenderATPBackend(SingleTextQueryBackend):
         """Identity mapping, source == target field name"""
         return src
 
+    def default_value_mapping(val):
+        return val
+
     def logontype_mapping(src):
         """Value mapping for logon events to reduced ATP LogonType set"""
         logontype_mapping = {
@@ -876,7 +879,7 @@ class WindowsDefenderATPBackend(SingleTextQueryBackend):
             raise NotSupportedError("Logon type %d unknown and can't be mapped" % src)
 
     def decompose_user(src_field, src_value):
-        """Decompose domain\user User field of Sysmon events into ATP InitiatingProcessAccountDomain and InititatingProcessAccountName."""
+        """Decompose domain\\user User field of Sysmon events into ATP InitiatingProcessAccountDomain and InititatingProcessAccountName."""
         reUser = re.compile("^(.*?\\\\(.*)$")
         m = reUser.match(src_value)
         if m:
@@ -889,12 +892,13 @@ class WindowsDefenderATPBackend(SingleTextQueryBackend):
             # Supported values:
             # (field name mapping, value mapping): distinct mappings for field name and value, may be a string (direct mapping) or function maps name/value to ATP target value
             # (mapping function,): receives field name and value as parameter, return list of 2 element tuples (destination field name and value)
+            # (replacement, ): Replaces field occurrence with static string
             "AccountName"               : (id_mapping, default_value_mapping),
             "CommandLine"               : ("ProcessCommandLine", default_value_mapping),
             "ComputerName"              : (id_mapping, default_value_mapping),
             "DestinationHostname"       : ("RemoteUrl", default_value_mapping),
             "DestinationIp"             : ("RemoteIP", default_value_mapping),
-            "DestinationIsIpv6"         : ("RemoteIP has \":\"", True
+            "DestinationIsIpv6"         : ("RemoteIP has \":\"", ),
             "DestinationPort"           : ("RemotePort", default_value_mapping),
             "Details"                   : ("RegistryValueData", default_value_mapping),
             "EventType"                 : ("ActionType", default_value_mapping),
