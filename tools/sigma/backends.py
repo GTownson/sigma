@@ -381,10 +381,18 @@ class SingleTextQueryBackend(RulenameCommentMixin, BaseBackend, QuoteCharMixin):
     mapListValueExpression = None       # Syntax for field/value condititons where map value is a list
 
     def generateANDNode(self, node):
-        return self.andToken.join([self.generateNode(val) for val in node])
+        return self.andToken.join(
+                filter(
+                    lambda n: n is not None,
+                    [self.generateNode(val) for val in node]
+                    ))
 
     def generateORNode(self, node):
-        return self.orToken.join([self.generateNode(val) for val in node])
+        return self.orToken.join(
+                filter(
+                    lambda n: n is not None,
+                    [self.generateNode(val) for val in node]
+                    ))
 
     def generateNOTNode(self, node):
         return self.notToken + self.generateNode(node.item)
@@ -858,7 +866,24 @@ class WindowsDefenderATPBackend(SingleTextQueryBackend):
         return src
 
     def default_value_mapping(val):
-        return val
+        op = "=="
+        if "*" in val[1:-1]:     # value contains * inside string - use regex match
+            op = "matches regex"
+            val = re.sub('([".^$]|\\\\(?![*?]))', val, '\\\\\g<1>')
+            val = re.sub('\\*', val, '.*')
+            val = re.sub('\\?', val, '.')
+        else:                           # value possibly only starts and/or ends with *, use prefix/postfix match
+            if val.endswith("*") and val.startswith("*"):
+                op = "contains"
+                val = self.cleanValue(val[1:-1])
+            elif val.endswith("*"):
+                op = "startswith"
+                val = self.cleanValue(val[:-1])
+            elif val.startswith("*"):
+                op = "endswith"
+                val = self.cleanValue(val[1:-1])
+
+        return "%s \"%s\"" % (op, val)
 
     def logontype_mapping(src):
         """Value mapping for logon events to reduced ATP LogonType set"""
@@ -927,6 +952,8 @@ class WindowsDefenderATPBackend(SingleTextQueryBackend):
         super().generate(sigmaparser)
 
     def generateBefore(self, parsed):
+        if self.table is None:
+            raise NotSupportedError("No WDATP table could be determined from Sigma rule")
         return "%s | " % self.table
 
     def generateMapItemNode(self, node):
@@ -935,31 +962,63 @@ class WindowsDefenderATPBackend(SingleTextQueryBackend):
         and creates an appropriate table reference.
         """
         key, value = node
-        if key == "EventID":
+        if type(value) == list:         # handle map items with values list like multiple OR-chained conditions
+            return self.generateSubexpressionNode(
+                    self.generateORNode(
+                        [self.generateMapItemNode((key, v)) for v in value]
+                        )
+                    )
+        elif key == "EventID":            # EventIDs are not reflected in condition but in table selection
             if self.product == "windows":
                 if self.service == "sysmon" and value == 1 \
                     or self.service == "security" and value == 4688:    # Process Execution
                     self.table = "ProcessCreationEvents"
                     return None
-                if self.service == "sysmon" and value == 3:      # Network Connection
+                elif self.service == "sysmon" and value == 3:      # Network Connection
                     self.table = "NetworkCommunicationEvents"
                     return None
-                if self.service == "sysmon" and value == 7:      # Image Load
+                elif self.service == "sysmon" and value == 7:      # Image Load
                     self.table = "ImageLoadEvents"
                     return None
-                if self.service == "sysmon" and value == 8:      # Create Remote Thread
+                elif self.service == "sysmon" and value == 8:      # Create Remote Thread
                     self.table = "MiscEvents"
                     return "ActionType == \"CreateRemoteThread\""
-                if self.service == "sysmon" and value == 11:     # File Creation
+                elif self.service == "sysmon" and value == 11:     # File Creation
                     self.table = "FileCreationEvents"
                     return None
-                if self.service == "sysmon" and value == 13 \
+                elif self.service == "sysmon" and value == 13 \
                     or self.service == "security" and value == 4657:    # Set Registry Value
                     self.table = "RegistryEvents"
                     return "ActionType == \"SetValue\""
-                if self.service == "security" and value == 4624:
+                elif self.service == "security" and value == 4624:
                     self.table = "LogonEvents"
                     return None
+        elif type(value) in (str, int):     # default value processing
+            try:
+                mapping = self.fieldMappings[key]
+            except KeyError:
+                raise NotSupportedError("No mapping defined for field '%s'" % key)
+            if len(mapping) == 1:
+                mapping = mapping[0]
+                if type(mapping) == str:
+                    return mapping
+                elif type(mapping) == function:
+                    conds = mapping(key, value)
+                    return self.generateSubexpressionNode(
+                            self.generateANDNode(
+                                ["%s == %s" % cond for cond in mapping(key, value)]
+                                )
+                            )
+            elif len(mapping) == 2:
+                result = list()
+                for mapitem, val in zip(mapping, node):     # iterate mapping and mapping source value synchronously over key and value
+                    if type(mapitem) == str:
+                        result.append(mapitem)
+                    elif callable(mapitem):
+                        result.append(mapitem(val))
+                return "{} {}".format(*result)
+            else:
+                raise TypeError("Backend does not support map values of type " + str(type(value)))
 
         return super().generateMapItemNode(node)
 
