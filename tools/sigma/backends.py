@@ -861,17 +861,47 @@ class WindowsDefenderATPBackend(SingleTextQueryBackend):
     mapListsSpecialHandling = True
     mapListValueExpression = "%s in %s"
 
-    def id_mapping(src):
+    def __init__(self, *args, **kwargs):
+        """Initialize field mappings"""
+        super().__init__(*args, **kwargs)
+        self.fieldMappings = {       # mapping between Sigma and ATP field names
+                # Supported values:
+                # (field name mapping, value mapping): distinct mappings for field name and value, may be a string (direct mapping) or function maps name/value to ATP target value
+                # (mapping function,): receives field name and value as parameter, return list of 2 element tuples (destination field name and value)
+                # (replacement, ): Replaces field occurrence with static string
+                "AccountName"               : (self.id_mapping, self.default_value_mapping),
+                "CommandLine"               : ("ProcessCommandLine", self.default_value_mapping),
+                "ComputerName"              : (self.id_mapping, self.default_value_mapping),
+                "DestinationHostname"       : ("RemoteUrl", self.default_value_mapping),
+                "DestinationIp"             : ("RemoteIP", self.default_value_mapping),
+                "DestinationIsIpv6"         : ("RemoteIP has \":\"", ),
+                "DestinationPort"           : ("RemotePort", self.default_value_mapping),
+                "Details"                   : ("RegistryValueData", self.default_value_mapping),
+                "EventType"                 : ("ActionType", self.default_value_mapping),
+                "Image"                     : ("FolderPath", self.default_value_mapping),
+                "ImageLoaded"               : ("FolderPath", self.default_value_mapping),
+                "LogonType"                 : (self.id_mapping, self.logontype_mapping),
+                "NewProcessName"            : ("FolderPath", self.default_value_mapping),
+                "ObjectValueName"           : ("RegistryValueName", self.default_value_mapping),
+                "ParentImage"               : ("InitiatingProcessFolderPath", self.default_value_mapping),
+                "SourceImage"               : ("InitiatingProcessFolderPath", self.default_value_mapping),
+                "TargetFilename"            : ("FolderPath", self.default_value_mapping),
+                "TargetImage"               : ("FolderPath", self.default_value_mapping),
+                "TargetObject"              : ("RegistryKey", self.default_value_mapping),
+                "User"                      : (self.decompose_user, ),
+                }
+
+    def id_mapping(self, src):
         """Identity mapping, source == target field name"""
         return src
 
-    def default_value_mapping(val):
+    def default_value_mapping(self, val):
         op = "=="
         if "*" in val[1:-1]:     # value contains * inside string - use regex match
             op = "matches regex"
-            val = re.sub('([".^$]|\\\\(?![*?]))', val, '\\\\\g<1>')
-            val = re.sub('\\*', val, '.*')
-            val = re.sub('\\?', val, '.')
+            val = re.sub('([".^$]|\\\\(?![*?]))', '\\\\\g<1>', val)
+            val = re.sub('\\*', '.*', val)
+            val = re.sub('\\?', '.', val)
         else:                           # value possibly only starts and/or ends with *, use prefix/postfix match
             if val.endswith("*") and val.startswith("*"):
                 op = "contains"
@@ -881,11 +911,11 @@ class WindowsDefenderATPBackend(SingleTextQueryBackend):
                 val = self.cleanValue(val[:-1])
             elif val.startswith("*"):
                 op = "endswith"
-                val = self.cleanValue(val[1:-1])
+                val = self.cleanValue(val[1:])
 
         return "%s \"%s\"" % (op, val)
 
-    def logontype_mapping(src):
+    def logontype_mapping(self, src):
         """Value mapping for logon events to reduced ATP LogonType set"""
         logontype_mapping = {
                 2: "Interactive",
@@ -903,42 +933,15 @@ class WindowsDefenderATPBackend(SingleTextQueryBackend):
         except KeyError:
             raise NotSupportedError("Logon type %d unknown and can't be mapped" % src)
 
-    def decompose_user(src_field, src_value):
+    def decompose_user(self, src_field, src_value):
         """Decompose domain\\user User field of Sysmon events into ATP InitiatingProcessAccountDomain and InititatingProcessAccountName."""
-        reUser = re.compile("^(.*?\\\\(.*)$")
+        reUser = re.compile("^(.*?)\\\\(.*)$")
         m = reUser.match(src_value)
         if m:
             domain, user = m.groups()
             return (("InitiatingProcessAccountDomain", domain), ("InititatingProcessAccountName", user))
         else:   # assume only user name is given if backslash is missing
             return (("InititatingProcessAccountName", src_value),)
-
-    fieldMappings = {       # mapping between Sigma and ATP field names
-            # Supported values:
-            # (field name mapping, value mapping): distinct mappings for field name and value, may be a string (direct mapping) or function maps name/value to ATP target value
-            # (mapping function,): receives field name and value as parameter, return list of 2 element tuples (destination field name and value)
-            # (replacement, ): Replaces field occurrence with static string
-            "AccountName"               : (id_mapping, default_value_mapping),
-            "CommandLine"               : ("ProcessCommandLine", default_value_mapping),
-            "ComputerName"              : (id_mapping, default_value_mapping),
-            "DestinationHostname"       : ("RemoteUrl", default_value_mapping),
-            "DestinationIp"             : ("RemoteIP", default_value_mapping),
-            "DestinationIsIpv6"         : ("RemoteIP has \":\"", ),
-            "DestinationPort"           : ("RemotePort", default_value_mapping),
-            "Details"                   : ("RegistryValueData", default_value_mapping),
-            "EventType"                 : ("ActionType", default_value_mapping),
-            "Image"                     : ("FolderPath", default_value_mapping),
-            "ImageLoaded"               : ("FolderPath", default_value_mapping),
-            "LogonType"                 : (id_mapping, logontype_mapping),
-            "NewProcessName"            : ("FolderPath", default_value_mapping),
-            "ObjectValueName"           : ("RegistryValueName", default_value_mapping),
-            "ParentImage"               : ("InitiatingProcessFolderPath", default_value_mapping),
-            "SourceImage"               : ("InitiatingProcessFolderPath", default_value_mapping),
-            "TargetFilename"            : ("FolderPath", default_value_mapping),
-            "TargetImage"               : ("FolderPath", default_value_mapping),
-            "TargetObject"              : ("RegistryKey", default_value_mapping),
-            "User"                      : (decompose_user, ),
-            }
 
     def generate(self, sigmaparser):
         self.table = None
@@ -954,7 +957,7 @@ class WindowsDefenderATPBackend(SingleTextQueryBackend):
     def generateBefore(self, parsed):
         if self.table is None:
             raise NotSupportedError("No WDATP table could be determined from Sigma rule")
-        return "%s | " % self.table
+        return "%s | where " % self.table
 
     def generateMapItemNode(self, node):
         """
@@ -963,10 +966,8 @@ class WindowsDefenderATPBackend(SingleTextQueryBackend):
         """
         key, value = node
         if type(value) == list:         # handle map items with values list like multiple OR-chained conditions
-            return self.generateSubexpressionNode(
-                    self.generateORNode(
-                        [self.generateMapItemNode((key, v)) for v in value]
-                        )
+            return self.generateORNode(
+                    [(key, v) for v in value]
                     )
         elif key == "EventID":            # EventIDs are not reflected in condition but in table selection
             if self.product == "windows":
@@ -1002,11 +1003,11 @@ class WindowsDefenderATPBackend(SingleTextQueryBackend):
                 mapping = mapping[0]
                 if type(mapping) == str:
                     return mapping
-                elif type(mapping) == function:
+                elif callable(mapping):
                     conds = mapping(key, value)
                     return self.generateSubexpressionNode(
                             self.generateANDNode(
-                                ["%s == %s" % cond for cond in mapping(key, value)]
+                                [cond for cond in mapping(key, value)]
                                 )
                             )
             elif len(mapping) == 2:
